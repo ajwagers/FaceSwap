@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Changed title slightly to reflect latest feature -->
+    <title>Welcome - Data Derby Hackathon III - Face Swap</title>
+
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            /* Removed justify-content: flex-start; align-items: center; for more natural flow */
+            min-height: 100vh;
+            font-family: sans-serif;
+            text-align: center;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+            position: relative;
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 15px;
+            width: 100%; /* Ensure h1 takes full width for centering */
+            text-align: center;
+        }
+        /* --- Logo Styling Changes --- */
+        img#logo-image {
+            max-width: 25%;   /* Smaller */
+            max-height: 15vh;  /* Smaller */
+            height: auto;
+            display: block;
+            /* margin: 0 auto 20px auto; /* REMOVED centering margin */
+            margin-left: auto;    /* Push to the right */
+            margin-right: 40px;   /* Add some space from the right edge */
+            margin-bottom: 10px;  /* Adjust bottom margin */
+            border: 1px solid #ccc;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        /* --- End Logo Styling Changes --- */
+
+        /* Container for video and canvas overlay */
+        .camera-container {
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 10px auto; /* Center the camera container */
+            max-width: 40%;
+            max-height: 30vh;
+        }
+        #camera-feed {
+            display: block;
+            max-width: 100%;
+            max-height: 30vh;
+            height: auto;
+            border: 1px solid #aaa;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            background-color: #222;
+            transform: scaleX(-1);
+        }
+        #overlay-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        .controls-and-results {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-top: 20px;
+            gap: 15px;
+            width: 100%;
+        }
+        .image-row {
+             display: flex;
+             justify-content: center;
+             align-items: flex-start;
+             gap: 20px;
+             flex-wrap: wrap;
+             margin-top: 10px; /* Added margin top */
+        }
+        .image-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+        .image-container img {
+             max-width: 300px;
+             height: auto;
+             border: 1px solid #ccc;
+             margin-top: 5px;
+        }
+        #swap-button {
+            padding: 10px 20px;
+            font-size: 1.1em;
+            cursor: pointer;
+        }
+        .status-and-errors { /* Container for status and error below camera */
+             display: flex;
+             flex-direction: column;
+             align-items: center;
+             margin-top: 5px;
+             min-height: 2.5em; /* Reserve space */
+        }
+        .error-message {
+            color: red;
+            font-weight: bold;
+        }
+        #status-message { /* This is the single status message now */
+            font-size: 1em;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Logo moved up, will be pushed right by CSS -->
+    <img id="logo-image" src="yz80ppqk.png" alt="Data Derby Hackathon III Image">
+
+    <h1>Welcome to the Data Derby Hackathon III</h1>
+
+    <!-- Camera Feed and Live Detection Overlay -->
+    <div class="camera-container">
+        <video id="camera-feed" autoplay playsinline muted></video>
+        <canvas id="overlay-canvas"></canvas>
+    </div>
+    <!-- Combined Status and Error Area -->
+    <div class="status-and-errors">
+        <div id="status-message">Initializing...</div> <!-- This is the primary status display -->
+        <div id="camera-error" class="error-message" style="display: none;"></div>
+    </div>
+
+
+    <!-- Controls and Results Area -->
+    <div class="controls-and-results">
+        <button id="swap-button" disabled>Load Models & Camera First</button>
+        <!-- REMOVED the duplicate status message div from here -->
+        <div class="image-row">
+            <div class="image-container">
+                <label>Source Image:</label>
+                <img id="source-image" src="analytics-meme-sword-guy-300x224.webp" alt="Analytics Meme">
+            </div>
+            <div class="image-container">
+                <label>Result:</label>
+                <img id="result-image" src="" alt="Swap Result">
+            </div>
+        </div>
+    </div>
+
+    <!-- Include face-api.js library *BEFORE* your inline script -->
+    <script src="face-api.min.js"></script>
+    <script>
+        // --- Get DOM Elements ---
+        const videoElement = document.getElementById('camera-feed');
+        const canvasElement = document.getElementById('overlay-canvas');
+        const errorElement = document.getElementById('camera-error');
+        // This now correctly targets the single status message div below the camera
+        const statusElement = document.getElementById('status-message');
+        const swapButton = document.getElementById('swap-button');
+        const sourceImageElement = document.getElementById('source-image');
+        const resultImageElement = document.getElementById('result-image');
+        const ctx = canvasElement.getContext('2d');
+
+        // --- Check if faceapi is loaded ---
+        if (typeof faceapi === 'undefined') {
+            console.error("FATAL: face-api.min.js failed to load or define 'faceapi'");
+            statusElement.textContent = 'Initialization Failed.'; // Update status
+            errorElement.textContent = "Error: Core face detection library failed to load.";
+            errorElement.style.display = 'block';
+        } else {
+            // --- State Variables ---
+            let detectionInterval = null;
+            let isDetecting = false;
+            let personPresent = false;
+            let modelsLoaded = false;
+            let cameraReady = false;
+
+            // --- Face Detection Options ---
+            const detectionOptions = new faceapi.TinyFaceDetectorOptions();
+
+            // --- Model Loading ---
+            async function loadModels() {
+                const MODEL_URL = './models';
+                statusElement.textContent = 'Loading face detection models...'; // Update status
+                console.log('Loading models from:', MODEL_URL);
+                try {
+                    await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+                    console.log("Models loaded successfully.");
+                    modelsLoaded = true;
+                    // Don't update status here yet, wait for camera or combined check
+                    updateSwapButtonState();
+                } catch (err) {
+                    console.error("Error loading models:", err);
+                    statusElement.textContent = 'Failed to load models.'; // Update status
+                    errorElement.textContent = `Error loading models: ${err.message}. Check console and model path.`;
+                    errorElement.style.display = 'block';
+                    throw err;
+                }
+            }
+
+            // --- Camera Setup ---
+            async function startCamera() {
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    console.error('getUserMedia is not supported.');
+                    statusElement.textContent = 'Camera access failed.'; // Update status
+                    errorElement.textContent = 'Camera access not supported by this browser.';
+                    errorElement.style.display = 'block';
+                    videoElement.style.display = 'none';
+                    throw new Error('getUserMedia not supported');
+                }
+                try {
+                    statusElement.textContent = 'Requesting camera access...'; // Update status
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                    videoElement.srcObject = stream;
+                    errorElement.style.display = 'none'; // Hide error message on success
+                    console.log("Camera stream started.");
+                    // Don't update status here yet, wait for metadata or combined check
+                    return new Promise((resolve) => {
+                        videoElement.onloadedmetadata = () => {
+                            console.log("Video metadata loaded.");
+                            cameraReady = true;
+                            updateSwapButtonState();
+                            resolve();
+                        };
+                    });
+                } catch (err) {
+                    console.error("Error accessing camera:", err);
+                    let errorMessage = "Could not access camera.";
+                    if (err.name === "NotAllowedError") errorMessage = "Camera access denied. Please allow permission.";
+                    else if (err.name === "NotFoundError") errorMessage = "No camera found on this device.";
+                    else errorMessage = `Error accessing camera: ${err.name}`;
+
+                    statusElement.textContent = 'Camera access failed.'; // Update status
+                    errorElement.textContent = errorMessage;
+                    errorElement.style.display = 'block';
+                    videoElement.style.display = 'none';
+                    throw err;
+                }
+            }
+
+             // --- Live Face Detection Loop (Optional - for visual feedback) ---
+             // Renamed from startFaceDetection to avoid confusion
+            function startLiveDetectionOverlay() {
+                 if (detectionInterval) { clearInterval(detectionInterval); }
+                 console.log("Starting live detection overlay loop.");
+
+                 // Debounce resizing canvas slightly
+                 let resizeTimeout;
+                 const resizeCanvas = () => {
+                    clearTimeout(resizeTimeout);
+                    resizeTimeout = setTimeout(() => {
+                        canvasElement.width = videoElement.clientWidth;
+                        canvasElement.height = videoElement.clientHeight;
+                        console.log(`Overlay canvas resized to: ${canvasElement.width}x${canvasElement.height}`);
+                    }, 100); // Adjust delay as needed
+                 }
+
+                 // Initial size set
+                 resizeCanvas();
+                 // Optional: Resize overlay canvas if video resizes (e.g., window resize)
+                 // videoElement.onresize = resizeCanvas; // Might be needed in some cases
+
+                 detectionInterval = setInterval(async () => {
+                     // Ensure canvas dimensions are valid before drawing
+                     if (isDetecting || videoElement.paused || videoElement.ended || !modelsLoaded || canvasElement.width === 0 || canvasElement.height === 0) {
+                         return;
+                     }
+                     // Check if canvas size matches video display size, resize if necessary
+                     if (canvasElement.width !== videoElement.clientWidth || canvasElement.height !== videoElement.clientHeight) {
+                         resizeCanvas();
+                         return; // Skip detection this interval while resizing
+                     }
+
+                     isDetecting = true;
+                     try {
+                         const detections = await faceapi.detectAllFaces(videoElement, detectionOptions);
+                         ctx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                         if (detections.length > 0) {
+                             const resizedDetections = faceapi.resizeResults(detections, { width: canvasElement.width, height: canvasElement.height });
+                             resizedDetections.forEach(detection => {
+                                 const box = detection.box;
+                                 const mirroredX = canvasElement.width - box.x - box.width;
+                                 ctx.beginPath();
+                                 ctx.rect(mirroredX, box.y, box.width, box.height);
+                                 ctx.lineWidth = 2; ctx.strokeStyle = 'lime'; ctx.stroke();
+                             });
+                             if (!personPresent) { console.log("Person detected (Live Overlay)"); personPresent = true; }
+                         } else {
+                             if (personPresent) { console.log("Person left view (Live Overlay)"); personPresent = false; }
+                         }
+                     } catch (error) { console.error("Error during live overlay detection:", error);
+                     } finally { isDetecting = false; }
+                 }, 500); // Interval time
+            }
+
+
+            // --- Update Swap Button State ---
+            function updateSwapButtonState() {
+                if (modelsLoaded && cameraReady) {
+                    swapButton.disabled = false;
+                    swapButton.textContent = 'Swap Faces';
+                    statusElement.textContent = 'Ready to swap!'; // Update status
+                } else {
+                    swapButton.disabled = true;
+                    // Keep the status message showing progress from loadModels/startCamera
+                    if (!modelsLoaded && !cameraReady) statusElement.textContent = 'Initializing...'; // Initial state
+                    else if (!modelsLoaded) statusElement.textContent = 'Loading models...';
+                    else if (!cameraReady) statusElement.textContent = 'Starting camera...';
+
+                    // Update button text separately
+                    if (!modelsLoaded) swapButton.textContent = 'Loading Models...';
+                    else if (!cameraReady) swapButton.textContent = 'Starting Camera...';
+                }
+            }
+
+            // --- Face Swap Logic ---
+            async function handleSwapButtonClick() {
+                if (!modelsLoaded || !cameraReady) {
+                    statusElement.textContent = 'Please wait for models and camera.';
+                    return;
+                }
+
+                swapButton.disabled = true;
+                swapButton.textContent = 'Processing...';
+                statusElement.textContent = 'Detecting faces...'; // Update status
+                resultImageElement.src = ""; // Clear previous result
+                errorElement.style.display = 'none'; // Hide previous errors
+
+                const cameraCanvas = document.createElement('canvas');
+                const sourceCanvas = document.createElement('canvas');
+                const cameraCtx = cameraCanvas.getContext('2d');
+                const sourceCtx = sourceCanvas.getContext('2d');
+
+                try {
+                    // 1. Detect face in Camera Feed
+                    cameraCanvas.width = videoElement.videoWidth;
+                    cameraCanvas.height = videoElement.videoHeight;
+                    // Ensure dimensions are valid before drawing
+                    if (cameraCanvas.width === 0 || cameraCanvas.height === 0) {
+                        throw new Error("Camera video dimensions are invalid.");
+                    }
+                    cameraCtx.drawImage(videoElement, 0, 0, cameraCanvas.width, cameraCanvas.height);
+
+                    const cameraDetection = await faceapi.detectSingleFace(cameraCanvas, detectionOptions);
+                    if (!cameraDetection) throw new Error("No face detected in the camera view. Please look at the camera.");
+                    const cameraFaceBox = cameraDetection.box;
+                    console.log("Camera face detected:", cameraFaceBox);
+
+                    // 2. Detect face in Source Image
+                    if (!sourceImageElement.complete || sourceImageElement.naturalWidth === 0) {
+                         console.log("Waiting for source image to load...");
+                         await new Promise((resolve, reject) => {
+                            sourceImageElement.onload = resolve;
+                            sourceImageElement.onerror = reject;
+                            // Re-trigger load if necessary (though usually not needed for static src)
+                            if (sourceImageElement.src !== sourceImageElement.currentSrc) {
+                                sourceImageElement.src = sourceImageElement.getAttribute('src');
+                            }
+                         });
+                         console.log("Source image loaded.");
+                    }
+                    sourceCanvas.width = sourceImageElement.naturalWidth;
+                    sourceCanvas.height = sourceImageElement.naturalHeight;
+                    if (sourceCanvas.width === 0 || sourceCanvas.height === 0) {
+                        throw new Error("Source image dimensions are invalid.");
+                    }
+                    sourceCtx.drawImage(sourceImageElement, 0, 0);
+
+                    const sourceDetection = await faceapi.detectSingleFace(sourceCanvas, detectionOptions);
+                    if (!sourceDetection) throw new Error("Could not detect a face in the source meme image.");
+                    const sourceFaceBox = sourceDetection.box;
+                    console.log("Source image face detected:", sourceFaceBox);
+
+                    // 3. Perform the Swap
+                    statusElement.textContent = 'Performing swap...'; // Update status
+                    sourceCtx.clearRect(sourceFaceBox.x, sourceFaceBox.y, sourceFaceBox.width, sourceFaceBox.height);
+                    sourceCtx.drawImage(
+                        cameraCanvas,
+                        cameraFaceBox.x, cameraFaceBox.y, cameraFaceBox.width, cameraFaceBox.height,
+                        sourceFaceBox.x, sourceFaceBox.y, sourceFaceBox.width, sourceFaceBox.height
+                    );
+                    console.log("Swap drawn onto canvas.");
+
+                    // 4. Display result
+                    resultImageElement.src = sourceCanvas.toDataURL('image/png');
+                    statusElement.textContent = 'Swap complete!'; // Update status
+
+                } catch (error) {
+                    console.error("Face swap failed:", error);
+                    statusElement.textContent = `Error: ${error.message}`; // Update status
+                    errorElement.textContent = `Swap Error: ${error.message}`;
+                    errorElement.style.display = 'block';
+                } finally {
+                    // Re-enable button, status message will show success or error
+                    updateSwapButtonState();
+                }
+            }
+
+            // --- Initialization ---
+            async function run() {
+                statusElement.textContent = 'Initializing...'; // Set initial status
+                try {
+                    await loadModels();
+                    await startCamera();
+                    // Ensure video is playing before starting overlay
+                    videoElement.play().then(() => {
+                        console.log("Video playing, starting live overlay.");
+                        startLiveDetectionOverlay();
+                    }).catch(err => {
+                        console.error("Error playing video:", err);
+                        statusElement.textContent = "Error starting video."; // Update status
+                        errorElement.textContent = "Could not autoplay video. User interaction might be needed.";
+                        errorElement.style.display = 'block';
+                    });
+                } catch (error) {
+                    console.error("Initialization failed:", error);
+                    // Status/error messages are set within loadModels/startCamera
+                }
+            }
+
+            // --- Event Listeners ---
+            swapButton.addEventListener('click', handleSwapButtonClick);
+            sourceImageElement.addEventListener('load', () => console.log("Source image loaded event fired."));
+            if (sourceImageElement.complete && sourceImageElement.naturalWidth > 0) {
+                 console.log("Source image was already complete on script load.");
+            }
+
+            // --- Start Everything ---
+            run();
+        } // End of the 'else' block checking if faceapi is defined
+    </script>
+
+</body>
+</html>
